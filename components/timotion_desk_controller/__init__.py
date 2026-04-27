@@ -19,7 +19,7 @@ TimotionDeskControllerComponent = timotion_desk_controller_ns.class_(
 CONFIG_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.declare_id(TimotionDeskControllerComponent),
     cv.Optional(CONF_ONLY_UP_DOWN_COMMAND, False): cv.boolean,
-}).extend(ble_client.BLE_CLIENT_SCHEMA)
+}).extend(ble_client.BLE_CLIENT_SCHEMA).extend(cv.COMPONENT_SCHEMA)
 
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])

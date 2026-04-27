@@ -1,6 +1,8 @@
 #include "timotion_desk_controller.h"
 #include "esphome/core/log.h"
 #include "esphome/core/helpers.h"
+#include <array>
+#include <cmath>
 #include <string>
 
 namespace esphome {
@@ -10,11 +12,15 @@ static const char *TAG = "timotion_desk_controller";
 
 static const float DESK_MIN_HEIGHT = 65;
 static const float DESK_MAX_HEIGHT = 130;
+static const float POSITION_EPSILON = 0.01f;
+static const uint8_t STALLED_LOOPS_LIMIT = 10;
 
 static float transform_height_to_position(float height) {
   return (height - DESK_MIN_HEIGHT) / (DESK_MAX_HEIGHT - DESK_MIN_HEIGHT);
 }
-static float transform_position_to_height(float position) { return position * DESK_MAX_HEIGHT; }
+static float transform_position_to_height(float position) {
+  return (position * (DESK_MAX_HEIGHT - DESK_MIN_HEIGHT)) + DESK_MIN_HEIGHT;
+}
 
 void TimotionDeskControllerComponent::loop() {}
 
@@ -25,7 +31,7 @@ void TimotionDeskControllerComponent::setup() {
 
 void TimotionDeskControllerComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "Timotion Desk Controller:");
-  ESP_LOGCONFIG(TAG, "  MAC address        : %s", this->parent()->address_str().c_str());
+  ESP_LOGCONFIG(TAG, "  MAC address        : %s", this->parent()->address_str());
   ESP_LOGCONFIG(TAG, "  Notifications      : %s", this->notify_disable_ ? "disable" : "enable");
   LOG_COVER("  ", "Desk", this);
 }
@@ -60,8 +66,11 @@ void TimotionDeskControllerComponent::gattc_event_handler(esp_gattc_cb_event_t e
       auto chr_output = this->parent()->get_characteristic(this->output_service_uuid_, this->output_char_uuid_);
       if (chr_output == nullptr) {
         this->status_set_warning();
-        ESP_LOGW(TAG, "No characteristic found at service %s char %s", this->output_service_uuid_.to_string().c_str(),
-                 this->output_char_uuid_.to_string().c_str());
+        std::array<char, 37> output_service_uuid_buf{};
+        std::array<char, 37> output_char_uuid_buf{};
+        ESP_LOGW(TAG, "No characteristic found at service %s char %s",
+                 this->output_service_uuid_.to_str(output_service_uuid_buf),
+                 this->output_char_uuid_.to_str(output_char_uuid_buf));
         break;
       }
       this->output_handle_ = chr_output->handle;
@@ -78,8 +87,11 @@ void TimotionDeskControllerComponent::gattc_event_handler(esp_gattc_cb_event_t e
       auto chr_input = this->parent()->get_characteristic(this->input_service_uuid_, this->input_char_uuid_);
       if (chr_input == nullptr) {
         this->status_set_warning();
-        ESP_LOGW(TAG, "No characteristic found at service %s char %s", this->input_service_uuid_.to_string().c_str(),
-                 this->input_char_uuid_.to_string().c_str());
+        std::array<char, 37> input_service_uuid_buf{};
+        std::array<char, 37> input_char_uuid_buf{};
+        ESP_LOGW(TAG, "No characteristic found at service %s char %s",
+                 this->input_service_uuid_.to_str(input_service_uuid_buf),
+                 this->input_char_uuid_.to_str(input_char_uuid_buf));
         break;
       }
       this->input_handle_ = chr_input->handle;
@@ -89,8 +101,11 @@ void TimotionDeskControllerComponent::gattc_event_handler(esp_gattc_cb_event_t e
       auto chr_control = this->parent()->get_characteristic(this->control_service_uuid_, this->control_char_uuid_);
       if (chr_control == nullptr) {
         this->status_set_warning();
-        ESP_LOGW(TAG, "No characteristic found at service %s char %s", this->control_service_uuid_.to_string().c_str(),
-                 this->control_char_uuid_.to_string().c_str());
+        std::array<char, 37> control_service_uuid_buf{};
+        std::array<char, 37> control_char_uuid_buf{};
+        ESP_LOGW(TAG, "No characteristic found at service %s char %s",
+                 this->control_service_uuid_.to_str(control_service_uuid_buf),
+                 this->control_char_uuid_.to_str(control_char_uuid_buf));
         break;
       }
       this->control_handle_ = chr_control->handle;
@@ -137,6 +152,10 @@ void TimotionDeskControllerComponent::gattc_event_handler(esp_gattc_cb_event_t e
 }
 
 void TimotionDeskControllerComponent::write_value_(uint16_t handle, uint64_t value) {
+  if (handle == 0) {
+    ESP_LOGW(TAG, "[%s] Skip write, characteristic handle is not ready yet", this->get_name().c_str());
+    return;
+  }
   ESP_LOGD(">>>> ", "write_value_");
   uint8_t data[5];
   for (int i = 4; i >= 0; --i) {
@@ -153,6 +172,10 @@ void TimotionDeskControllerComponent::write_value_(uint16_t handle, uint64_t val
 }
 
 void TimotionDeskControllerComponent::read_value_(uint16_t handle) {
+  if (handle == 0) {
+    ESP_LOGW(TAG, "[%s] Skip read, characteristic handle is not ready yet", this->get_name().c_str());
+    return;
+  }
   auto status_read = esp_ble_gattc_read_char(this->parent()->get_gattc_if(), this->parent()->get_conn_id(), handle,
                                              ESP_GATT_AUTH_REQ_NONE);
   if (status_read) {
@@ -170,25 +193,31 @@ cover::CoverTraits TimotionDeskControllerComponent::get_traits() {
 }
 
 void TimotionDeskControllerComponent::publish_cover_state_(uint8_t *value, uint16_t value_len) {
-  std::vector<uint8_t> x(value, value + value_len);
+  if (value_len < 4) {
+    ESP_LOGW(TAG, "[%s] Invalid notification payload length: %u", this->get_name().c_str(), value_len);
+    return;
+  }
 
-  uint16_t height = x[3];
-  uint16_t speed = x[1];
+  const uint16_t height = value[3];
+  const uint16_t speed = value[1];
 
   if (this->lastHeight == height && this->lastSpeed == speed) return; 
   this->lastHeight = height;
   this->lastSpeed = speed;
 
-  float position = transform_height_to_position((float) height);
-  ESP_LOGCONFIG(TAG, "publish %d %d %d %d", speed, height, position, this->position);
+  const float position = clamp(transform_height_to_position(static_cast<float>(height)), 0.0f, 1.0f);
+  ESP_LOGD(TAG, "publish speed=%u height=%u position=%.3f previous=%.3f", speed, height, position, this->position);
 
   //   if (speed == 40) {
   if (speed == 64) {
     this->current_operation = cover::COVER_OPERATION_IDLE;
-  } else if (this->position < position) {
-    this->current_operation = cover::COVER_OPERATION_OPENING;
-  } else if (this->position > position) {
-    this->current_operation = cover::COVER_OPERATION_CLOSING;
+  } else if (!this->controlled_) {
+    // Only infer direction from measurements when we're not in target-controlled movement.
+    if (this->position < position) {
+      this->current_operation = cover::COVER_OPERATION_OPENING;
+    } else if (this->position > position) {
+      this->current_operation = cover::COVER_OPERATION_CLOSING;
+    }
   }
 
   this->position = position;
@@ -211,6 +240,25 @@ void TimotionDeskControllerComponent::move_desk_() {
     ESP_LOGD(TAG, "Update Desk - target reached");
     this->stop_move_();
     return;
+  }
+
+  // Stop if command is active but position is no longer changing.
+  if (std::fabs(this->position - this->last_move_position_) <= POSITION_EPSILON / 4.0f) {
+    this->stalled_loops_++;
+    if (this->stalled_loops_ > STALLED_LOOPS_LIMIT) {
+      if (this->position_target_ >= 1.0f - POSITION_EPSILON) {
+        this->position = 1.0f;
+      } else if (this->position_target_ <= POSITION_EPSILON) {
+        this->position = 0.0f;
+      }
+      ESP_LOGD(TAG, "Update Desk - position stalled, stopping movement");
+      this->publish_state(false);
+      this->stop_move_();
+      return;
+    }
+  } else {
+    this->stalled_loops_ = 0;
+    this->last_move_position_ = this->position;
   }
 
   if (this->notify_disable_) {
@@ -239,9 +287,9 @@ void TimotionDeskControllerComponent::control(const cover::CoverCall &call) {
       this->stop_move_();
     }
 
-    this->position_target_ = *call.get_position();
+    this->position_target_ = clamp(*call.get_position(), 0.0f, 1.0f);
 
-    if (this->position == this->position_target_) {
+    if (std::fabs(this->position - this->position_target_) <= POSITION_EPSILON) {
       return;
     }
 
@@ -263,6 +311,8 @@ void TimotionDeskControllerComponent::control(const cover::CoverCall &call) {
 
 void TimotionDeskControllerComponent::start_move_torwards_() {
   this->controlled_ = true;
+  this->last_move_position_ = this->position;
+  this->stalled_loops_ = 0;
   if (this->notify_disable_) {
     this->not_moving_loop_ = 0;
   }
@@ -298,9 +348,9 @@ void TimotionDeskControllerComponent::stop_move_() {
 bool TimotionDeskControllerComponent::is_at_target_() const {
   switch (this->current_operation) {
     case cover::COVER_OPERATION_OPENING:
-      return this->position >= this->position_target_;
+      return this->position + POSITION_EPSILON >= this->position_target_;
     case cover::COVER_OPERATION_CLOSING:
-      return this->position <= this->position_target_;
+      return this->position <= this->position_target_ + POSITION_EPSILON;
     case cover::COVER_OPERATION_IDLE:
       if (this->notify_disable_) {
         return !this->controlled_;
