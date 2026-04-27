@@ -12,7 +12,7 @@ static const char *TAG = "timotion_desk_controller";
 
 static const float DESK_MIN_HEIGHT = 65;
 static const float DESK_MAX_HEIGHT = 130;
-static const float HEIGHT_EPSILON = 0.5f;
+static const float HEIGHT_EPSILON = 0.01f;
 static const uint8_t STALLED_LOOPS_LIMIT = 10;
 
 void TimotionDeskControllerComponent::loop() {}
