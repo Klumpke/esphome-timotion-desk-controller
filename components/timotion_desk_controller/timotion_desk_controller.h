@@ -42,10 +42,6 @@ class TimotionDeskControllerComponent : public Component, public number::Number,
   espbt::ESPBTUUID output_char_uuid_ = uuid128_from_string("6e400003-b5a3-f393-e0a9-e50e24dcca9e");
   uint16_t output_handle_{0};
 
-  espbt::ESPBTUUID input_service_uuid_ = uuid128_from_string("6e400001-b5a3-f393-e0a9-e50e24dcca9e");
-  espbt::ESPBTUUID input_char_uuid_ = uuid128_from_string("6e400002-b5a3-f393-e0a9-e50e24dcca9e");
-  uint16_t input_handle_{0};
-
   espbt::ESPBTUUID control_service_uuid_ = uuid128_from_string("6e400001-b5a3-f393-e0a9-e50e24dcca9e");
   espbt::ESPBTUUID control_char_uuid_ = uuid128_from_string("6e400002-b5a3-f393-e0a9-e50e24dcca9e");
   uint16_t control_handle_{0};

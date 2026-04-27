@@ -76,20 +76,6 @@ void TimotionDeskControllerComponent::gattc_event_handler(esp_gattc_cb_event_t e
         ESP_LOGW(TAG, "esp_ble_gattc_register_for_notify failed, status=%d", status_notify);
       }
 
-      // Look for input handle
-      this->input_handle_ = 0;
-      auto chr_input = this->parent()->get_characteristic(this->input_service_uuid_, this->input_char_uuid_);
-      if (chr_input == nullptr) {
-        this->status_set_warning();
-        std::array<char, 37> input_service_uuid_buf{};
-        std::array<char, 37> input_char_uuid_buf{};
-        ESP_LOGW(TAG, "No characteristic found at service %s char %s",
-                 this->input_service_uuid_.to_str(input_service_uuid_buf),
-                 this->input_char_uuid_.to_str(input_char_uuid_buf));
-        break;
-      }
-      this->input_handle_ = chr_input->handle;
-
       // Look for control handle
       this->control_handle_ = 0;
       auto chr_control = this->parent()->get_characteristic(this->control_service_uuid_, this->control_char_uuid_);
@@ -187,7 +173,7 @@ void TimotionDeskControllerComponent::publish_desk_state_(uint8_t *value, uint16
   const uint16_t height = value[3];
   const uint16_t speed = value[1];
 
-  if (this->lastHeight == height && this->lastSpeed == speed) return; 
+  if (this->lastHeight == height && this->lastSpeed == speed) return;
   this->lastHeight = height;
   this->lastSpeed = speed;
 
@@ -297,30 +283,18 @@ void TimotionDeskControllerComponent::start_move_torwards_() {
     this->current_direction_ = DeskDirection::DOWN;
   }
 
-  //   if (false == this->use_only_up_down_command_) {
-  //     this->write_value_(this->control_handle_, 0xFE);
-  //     this->write_value_(this->control_handle_, 0xFF);
-  //   }
 }
 
 void TimotionDeskControllerComponent::move_torwards_() {
-  //   if (this->use_only_up_down_command_) {
   if (this->current_direction_ == DeskDirection::UP) {
-    //   this->write_value_(this->control_handle_, 0x47);
     this->write_value_(this->control_handle_, 0xd9ff01633c);
   } else if (this->current_direction_ == DeskDirection::DOWN) {
     this->write_value_(this->control_handle_, 0xd9ff02603a);
   }
-  //   } else {
-  //     this->write_value_(this->input_handle_, this->target_height_);
-  //   }
 }
 
 void TimotionDeskControllerComponent::stop_move_() {
-  this->write_value_(this->control_handle_, 0x0000000000); // not needed?
-  //   if (false == this->use_only_up_down_command_) {
-  //     this->write_value_(this->input_handle_, 0x8001);
-  //   }
+  this->write_value_(this->control_handle_, 0x0000000000);
 
   this->current_direction_ = DeskDirection::IDLE;
   this->controlled_ = false;
