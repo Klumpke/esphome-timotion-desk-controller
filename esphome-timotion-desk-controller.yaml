@@ -1,20 +1,17 @@
 substitutions:
-  device_name: 'esp-office-workstation'
-  friendly_name: 'Workstation'
+  device_name: 'esp-stand-up-desk'
+  friendly_name: 'Stand Up Desk'
   ap_pw: 'L2i5rbTy5Fa7'
   ssid: !secret wifi_ssid
   ssid_pw: !secret wifi_password
 
 esphome:
   name: '${device_name}'
-  libraries:
-    - 'ESP32 BLE Arduino'
 
 esp32:
   board: esp32dev
   framework:
-    # type: esp-idf
-    type: arduino
+    type: esp-idf
 
 # Enable logging
 logger:
@@ -24,25 +21,35 @@ logger:
 
 # Enable Home Assistant API
 api:
+  encryption:
+    key: !secret display_key
 
 ota:
+  - platform: esphome
+    password: !secret display_ota
 
 wifi:
   ssid: $ssid
   password: $ssid_pw
+  manual_ip:
+    static_ip: 10.2.10.19
+    gateway: 10.2.10.254
+    subnet: 255.255.255.0
   # Enable fallback hotspot (captive portal) in case wifi connection fails
   ap:
     ssid: AP_${device_name}
     password: $ap_pw
 # Only for arduino framework
-# captive_portal: 
+captive_portal: 
 
 # BEGIN TIMOTION INTEGRATION
 external_components:
   # - source:
   #     type: local
-  #     path: components/esphome-timotion-desk-controller/components
+  #     path: components
   - source: github://Klumpke/esphome-timotion-desk-controller@main
+    components: [ timotion_desk_controller ]
+    refresh: 0s
 
 globals:
   # To store the Desk Connection Status
@@ -53,18 +60,21 @@ globals:
 esp32_ble_tracker:
 
 ble_client:
-  - mac_address: '00:00:00:00:00:00' # Replace with the desk bluetooth mac address
+  - mac_address: 'DD:B5:D0:6B:D9:BC'
     id: timotion_desk
     on_connect:
       then:
+        # Update the Desk Connection Status
         - lambda: |-
             id(desk_client_connected) = true;
         - delay: 5s
+        # Update desk height and speed sensors after bluetooth is connected
         - lambda: |-
             id(desk_state).update();
             id(desk_height).update();
     on_disconnect:
       then:
+        # Update the Desk Connection Status
         - lambda: |-
             id(desk_client_connected) = false;
 
@@ -75,8 +85,29 @@ timotion_desk_controller:
 
 number:
   - platform: timotion_desk_controller
-    name: '${friendly_name} Desk Height'
+    id: desk_target_height
+    name: '${friendly_name} Height'
     mode: slider
+    icon: mdi:desk
+
+button:
+  - platform: template
+    name: '${friendly_name} Up'
+    icon: 'mdi:arrow-up-bold'
+    on_press:
+      then:
+        - number.set:
+            id: desk_target_height
+            value: !lambda 'return id(desk_height).state + 1.0f;'
+
+  - platform: template
+    name: '${friendly_name} Down'
+    icon: 'mdi:arrow-down-bold'
+    on_press:
+      then:
+        - number.set:
+            id: desk_target_height
+            value: !lambda 'return id(desk_height).state - 1.0f;'
 
 sensor:
   # Desk Height Sensor
@@ -84,7 +115,7 @@ sensor:
     type: characteristic
     ble_client_id: timotion_desk
     id: desk_height
-    name: 'Desk Height'
+    name: '${friendly_name} Height'
     service_uuid: '6e400001-b5a3-f393-e0a9-e50e24dcca9e'
     characteristic_uuid: '6e400003-b5a3-f393-e0a9-e50e24dcca9e'
     icon: 'mdi:arrow-up-down'
@@ -113,7 +144,7 @@ sensor:
     type: characteristic
     ble_client_id: timotion_desk
     id: desk_state
-    name: 'Desk State'
+    name: '${friendly_name} State'
     service_uuid: '6e400001-b5a3-f393-e0a9-e50e24dcca9e'
     characteristic_uuid: '6e400003-b5a3-f393-e0a9-e50e24dcca9e'
     icon: 'mdi:arrow-split-horizontal'
@@ -131,14 +162,14 @@ sensor:
 binary_sensor:
   # Desk Bluetooth Connection Status
   - platform: template
-    name: 'Desk Connection'
+    name: '${friendly_name} Connection'
     icon: 'mdi:bluetooth'
     id: desk_connection
     lambda: 'return id(desk_client_connected);'
 
   # Desk Moving Status
   - platform: template
-    name: 'Desk Moving'
+    name: '${friendly_name} Moving'
     id: desk_moving
     icon: 'mdi:engine'
     lambda: 'return abs(id(desk_state).state) == 1;'
