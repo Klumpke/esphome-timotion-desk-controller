@@ -39,7 +39,7 @@ external_components:
   # - source:
   #     type: local
   #     path: components/esphome-timotion-desk-controller/components
-  - source: github://Mysticsilent/esphome-timotion-desk-controller@main
+  - source: github://Klumpke/esphome-timotion-desk-controller@main
 
 globals:
   # To store the Desk Connection Status
@@ -70,9 +70,10 @@ timotion_desk_controller:
   # Optional -- todo remove
   only_up_down_command: true
 
-cover:
+number:
   - platform: timotion_desk_controller
-    name: '${friendly_name} Desk'
+    name: '${friendly_name} Desk Height'
+    mode: slider
 
 sensor:
   # Desk Height Sensor

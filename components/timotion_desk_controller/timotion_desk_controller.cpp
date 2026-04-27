@@ -12,15 +12,8 @@ static const char *TAG = "timotion_desk_controller";
 
 static const float DESK_MIN_HEIGHT = 65;
 static const float DESK_MAX_HEIGHT = 130;
-static const float POSITION_EPSILON = 0.01f;
+static const float HEIGHT_EPSILON = 0.5f;
 static const uint8_t STALLED_LOOPS_LIMIT = 10;
-
-static float transform_height_to_position(float height) {
-  return (height - DESK_MIN_HEIGHT) / (DESK_MAX_HEIGHT - DESK_MIN_HEIGHT);
-}
-static float transform_position_to_height(float position) {
-  return (position * (DESK_MAX_HEIGHT - DESK_MIN_HEIGHT)) + DESK_MIN_HEIGHT;
-}
 
 void TimotionDeskControllerComponent::loop() {}
 
@@ -33,7 +26,8 @@ void TimotionDeskControllerComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "Timotion Desk Controller:");
   ESP_LOGCONFIG(TAG, "  MAC address        : %s", this->parent()->address_str());
   ESP_LOGCONFIG(TAG, "  Notifications      : %s", this->notify_disable_ ? "disable" : "enable");
-  LOG_COVER("  ", "Desk", this);
+  ESP_LOGCONFIG(TAG, "  Min height         : %.1f cm", DESK_MIN_HEIGHT);
+  ESP_LOGCONFIG(TAG, "  Max height         : %.1f cm", DESK_MAX_HEIGHT);
 }
 
 void TimotionDeskControllerComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
@@ -124,7 +118,7 @@ void TimotionDeskControllerComponent::gattc_event_handler(esp_gattc_cb_event_t e
       }
       if (param->read.handle == this->output_handle_) {
         this->status_clear_warning();
-        this->publish_cover_state_(param->read.value, param->read.value_len);
+        this->publish_desk_state_(param->read.value, param->read.value_len);
       }
       break;
     }
@@ -134,7 +128,7 @@ void TimotionDeskControllerComponent::gattc_event_handler(esp_gattc_cb_event_t e
         break;
       ESP_LOGV(TAG, "[%s] ESP_GATTC_NOTIFY_EVT: handle=0x%x, value=0x%x", this->get_name().c_str(),
                param->notify.handle, param->notify.value[0]);
-      this->publish_cover_state_(param->notify.value, param->notify.value_len);
+      this->publish_desk_state_(param->notify.value, param->notify.value_len);
       break;
     }
 
@@ -167,7 +161,7 @@ void TimotionDeskControllerComponent::write_value_(uint16_t handle, uint64_t val
 
   if (status != ESP_OK) {
     this->status_set_warning();
-    ESP_LOGW(TAG, "[%s] Error sending write request for cover, status=%d", this->get_name().c_str(), status);
+    ESP_LOGW(TAG, "[%s] Error sending write request for number, status=%d", this->get_name().c_str(), status);
   }
 }
 
@@ -180,19 +174,11 @@ void TimotionDeskControllerComponent::read_value_(uint16_t handle) {
                                              ESP_GATT_AUTH_REQ_NONE);
   if (status_read) {
     this->status_set_warning();
-    ESP_LOGW(TAG, "[%s] Error sending read request for cover, status=%d", this->get_name().c_str(), status_read);
+    ESP_LOGW(TAG, "[%s] Error sending read request for number, status=%d", this->get_name().c_str(), status_read);
   }
 }
 
-cover::CoverTraits TimotionDeskControllerComponent::get_traits() {
-  auto traits = cover::CoverTraits();
-  traits.set_is_assumed_state(false);
-  traits.set_supports_position(true);
-  traits.set_supports_tilt(false);
-  return traits;
-}
-
-void TimotionDeskControllerComponent::publish_cover_state_(uint8_t *value, uint16_t value_len) {
+void TimotionDeskControllerComponent::publish_desk_state_(uint8_t *value, uint16_t value_len) {
   if (value_len < 4) {
     ESP_LOGW(TAG, "[%s] Invalid notification payload length: %u", this->get_name().c_str(), value_len);
     return;
@@ -205,28 +191,23 @@ void TimotionDeskControllerComponent::publish_cover_state_(uint8_t *value, uint1
   this->lastHeight = height;
   this->lastSpeed = speed;
 
-  const float position = clamp(transform_height_to_position(static_cast<float>(height)), 0.0f, 1.0f);
-  ESP_LOGD(TAG, "publish speed=%u height=%u position=%.3f previous=%.3f", speed, height, position, this->position);
+  const float measured_height = clamp(static_cast<float>(height), DESK_MIN_HEIGHT, DESK_MAX_HEIGHT);
+  ESP_LOGD(TAG, "publish speed=%u height=%.1f previous=%.1f", speed, measured_height, this->state);
 
-  //   if (speed == 40) {
   if (speed == 64) {
-    this->current_operation = cover::COVER_OPERATION_IDLE;
-  } else if (!this->controlled_) {
-    // Only infer direction from measurements when we're not in target-controlled movement.
-    if (this->position < position) {
-      this->current_operation = cover::COVER_OPERATION_OPENING;
-    } else if (this->position > position) {
-      this->current_operation = cover::COVER_OPERATION_CLOSING;
-    }
+    this->current_direction_ = DeskDirection::IDLE;
+  } else if (speed == 66) {
+    this->current_direction_ = DeskDirection::UP;
+  } else if (speed == 65) {
+    this->current_direction_ = DeskDirection::DOWN;
   }
 
-  this->position = position;
-  this->publish_state(false);
+  this->publish_state(measured_height);
 }
 
 void TimotionDeskControllerComponent::move_desk_() {
   if (this->notify_disable_) {
-    if (this->controlled_ || this->current_operation != cover::COVER_OPERATION_IDLE) {
+    if (this->controlled_ || this->current_direction_ != DeskDirection::IDLE) {
       this->read_value_(this->output_handle_);
     }
   }
@@ -243,26 +224,25 @@ void TimotionDeskControllerComponent::move_desk_() {
   }
 
   // Stop if command is active but position is no longer changing.
-  if (std::fabs(this->position - this->last_move_position_) <= POSITION_EPSILON / 4.0f) {
+  if (std::fabs(this->state - this->last_move_height_) <= HEIGHT_EPSILON / 2.0f) {
     this->stalled_loops_++;
     if (this->stalled_loops_ > STALLED_LOOPS_LIMIT) {
-      if (this->position_target_ >= 1.0f - POSITION_EPSILON) {
-        this->position = 1.0f;
-      } else if (this->position_target_ <= POSITION_EPSILON) {
-        this->position = 0.0f;
+      if (this->target_height_ >= DESK_MAX_HEIGHT - HEIGHT_EPSILON) {
+        this->publish_state(DESK_MAX_HEIGHT);
+      } else if (this->target_height_ <= DESK_MIN_HEIGHT + HEIGHT_EPSILON) {
+        this->publish_state(DESK_MIN_HEIGHT);
       }
       ESP_LOGD(TAG, "Update Desk - position stalled, stopping movement");
-      this->publish_state(false);
       this->stop_move_();
       return;
     }
   } else {
     this->stalled_loops_ = 0;
-    this->last_move_position_ = this->position;
+    this->last_move_height_ = this->state;
   }
 
   if (this->notify_disable_) {
-    if (this->current_operation == cover::COVER_OPERATION_IDLE) {
+    if (this->current_direction_ == DeskDirection::IDLE) {
       this->not_moving_loop_++;
       if (this->not_moving_loop_ > 4) {
         ESP_LOGD(TAG, "Update Desk - desk not moving");
@@ -273,49 +253,50 @@ void TimotionDeskControllerComponent::move_desk_() {
     }
   }
 
-  ESP_LOGD(TAG, "Update Desk - Move from %.0f to %.0f", this->position * 100, this->position_target_ * 100);
+  ESP_LOGD(TAG, "Update Desk - Move from %.1f to %.1f", this->state, this->target_height_);
   this->move_torwards_();
 }
 
-void TimotionDeskControllerComponent::control(const cover::CoverCall &call) {
+void TimotionDeskControllerComponent::control(float value) {
   if (this->notify_disable_) {
     this->read_value_(this->output_handle_);
   }
 
-  if (call.get_position().has_value()) {
-    if (this->current_operation != cover::COVER_OPERATION_IDLE) {
-      this->stop_move_();
-    }
-
-    this->position_target_ = clamp(*call.get_position(), 0.0f, 1.0f);
-
-    if (std::fabs(this->position - this->position_target_) <= POSITION_EPSILON) {
+  if (!std::isfinite(this->state)) {
+    if (this->lastHeight == 0) {
+      ESP_LOGW(TAG, "Desk height is unknown yet, ignoring target %.1f until first measurement", value);
       return;
     }
+    this->publish_state(clamp(static_cast<float>(this->lastHeight), DESK_MIN_HEIGHT, DESK_MAX_HEIGHT));
+  }
 
-    if (this->position_target_ > this->position) {
-      this->current_operation = cover::COVER_OPERATION_OPENING;
-    } else {
-      this->current_operation = cover::COVER_OPERATION_CLOSING;
-    }
+  if (this->current_direction_ != DeskDirection::IDLE) {
+    this->stop_move_();
+  }
 
-    this->start_move_torwards_();
+  this->target_height_ = clamp(value, DESK_MIN_HEIGHT, DESK_MAX_HEIGHT);
+
+  if (std::fabs(this->state - this->target_height_) <= HEIGHT_EPSILON) {
     return;
   }
 
-  if (call.get_stop()) {
-    ESP_LOGD(TAG, "Cover control - STOP");
-    this->stop_move_();
-  }
+  this->start_move_torwards_();
 }
 
 void TimotionDeskControllerComponent::start_move_torwards_() {
   this->controlled_ = true;
-  this->last_move_position_ = this->position;
+  this->last_move_height_ = this->state;
   this->stalled_loops_ = 0;
   if (this->notify_disable_) {
     this->not_moving_loop_ = 0;
   }
+
+  if (this->target_height_ > this->state) {
+    this->current_direction_ = DeskDirection::UP;
+  } else {
+    this->current_direction_ = DeskDirection::DOWN;
+  }
+
   //   if (false == this->use_only_up_down_command_) {
   //     this->write_value_(this->control_handle_, 0xFE);
   //     this->write_value_(this->control_handle_, 0xFF);
@@ -324,14 +305,14 @@ void TimotionDeskControllerComponent::start_move_torwards_() {
 
 void TimotionDeskControllerComponent::move_torwards_() {
   //   if (this->use_only_up_down_command_) {
-  if (this->current_operation == cover::COVER_OPERATION_OPENING) {
+  if (this->current_direction_ == DeskDirection::UP) {
     //   this->write_value_(this->control_handle_, 0x47);
     this->write_value_(this->control_handle_, 0xd9ff01633c);
-  } else if (this->current_operation == cover::COVER_OPERATION_CLOSING) {
+  } else if (this->current_direction_ == DeskDirection::DOWN) {
     this->write_value_(this->control_handle_, 0xd9ff02603a);
   }
   //   } else {
-  //     this->write_value_(this->input_handle_, transform_position_to_height(this->position_target_));
+  //     this->write_value_(this->input_handle_, this->target_height_);
   //   }
 }
 
@@ -341,21 +322,21 @@ void TimotionDeskControllerComponent::stop_move_() {
   //     this->write_value_(this->input_handle_, 0x8001);
   //   }
 
-  this->current_operation = cover::COVER_OPERATION_IDLE;
+  this->current_direction_ = DeskDirection::IDLE;
   this->controlled_ = false;
 }
 
 bool TimotionDeskControllerComponent::is_at_target_() const {
-  switch (this->current_operation) {
-    case cover::COVER_OPERATION_OPENING:
-      return this->position + POSITION_EPSILON >= this->position_target_;
-    case cover::COVER_OPERATION_CLOSING:
-      return this->position <= this->position_target_ + POSITION_EPSILON;
-    case cover::COVER_OPERATION_IDLE:
+  switch (this->current_direction_) {
+    case DeskDirection::UP:
+      return this->state + HEIGHT_EPSILON >= this->target_height_;
+    case DeskDirection::DOWN:
+      return this->state <= this->target_height_ + HEIGHT_EPSILON;
+    case DeskDirection::IDLE:
       if (this->notify_disable_) {
         return !this->controlled_;
       }
-    //   return !this->controlled_;
+      return true;
     default:
       return true;
   }

@@ -25,6 +25,7 @@ timotion_desk_controller:
   ble_client_id: timotion_desk
   only_up_down_command: false
 
-cover:
+number:
   - platform: timotion_desk_controller
-    name: "Desk"
+    name: "Desk Height"
+    mode: slider

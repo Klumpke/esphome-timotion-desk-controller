@@ -1,7 +1,7 @@
 #pragma once
 
 #include "esphome/core/component.h"
-#include "esphome/components/cover/cover.h"
+#include "esphome/components/number/number.h"
 #include "esphome/components/ble_client/ble_client.h"
 #include "esphome/components/esp32_ble_tracker/esp32_ble_tracker.h"
 
@@ -18,7 +18,7 @@ using namespace ble_client;
 
 espbt::ESPBTUUID uuid128_from_string(std::string value);
 
-class TimotionDeskControllerComponent : public Component, public cover::Cover, public BLEClientNode {
+class TimotionDeskControllerComponent : public Component, public number::Number, public BLEClientNode {
  public:
   TimotionDeskControllerComponent() : Component(){};
 
@@ -33,8 +33,7 @@ class TimotionDeskControllerComponent : public Component, public cover::Cover, p
   void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
                            esp_ble_gattc_cb_param_t *param) override;
 
-  cover::CoverTraits get_traits() override;
-  void control(const cover::CoverCall &call) override;
+  void control(float value) override;
 
  private:
   bool use_only_up_down_command_ = false;
@@ -53,17 +52,24 @@ class TimotionDeskControllerComponent : public Component, public cover::Cover, p
   uint16_t lastHeight{0};
   uint16_t lastSpeed{0};
 
+  enum class DeskDirection : uint8_t {
+    IDLE = 0,
+    UP = 1,
+    DOWN = 2,
+  };
+
   bool controlled_ = false;
-  float position_target_{0.0f};
+  float target_height_{0.0f};
 
   bool notify_disable_ = true;
   int not_moving_loop_ = 0;
-  float last_move_position_{0.0f};
+  float last_move_height_{0.0f};
   uint8_t stalled_loops_{0};
+  DeskDirection current_direction_{DeskDirection::IDLE};
 
   void write_value_(uint16_t handle, uint64_t value);
   void read_value_(uint16_t handle);
-  void publish_cover_state_(uint8_t *value, uint16_t value_len);
+  void publish_desk_state_(uint8_t *value, uint16_t value_len);
   void move_desk_();
   bool is_at_target_() const;
   void start_move_torwards_();
